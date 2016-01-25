@@ -17,6 +17,7 @@ package mqtt
 import (
 	"io/ioutil"
 	"log"
+	"os"
 )
 
 // Internal levels of library output that are initialised to not print
@@ -29,8 +30,8 @@ var (
 )
 
 func init() {
-	ERROR = log.New(ioutil.Discard, "", 0)
+	ERROR = log.New(os.Stdout, "", 0)
 	CRITICAL = log.New(ioutil.Discard, "", 0)
-	WARN = log.New(ioutil.Discard, "", 0)
+	WARN = log.New(os.Stdout, "", 0)
 	DEBUG = log.New(ioutil.Discard, "", 0)
 }

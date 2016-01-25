@@ -116,5 +116,5 @@ func (store *MemoryStore) Reset() {
 	defer store.Unlock()
 	chkcond(store.opened)
 	store.messages = make(map[string]packets.ControlPacket)
-	WARN.Println(STR, "memorystore wiped")
+	DEBUG.Println(STR, "memorystore wiped")
 }

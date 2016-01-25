@@ -15,11 +15,8 @@
 package mqtt
 
 import (
-	"errors"
 	"sync"
 	"time"
-
-	"github.com/antlinker/mqtt-cli/packets"
 )
 
 type lastcontact struct {
@@ -38,39 +35,4 @@ func (l *lastcontact) get() time.Time {
 	l.Lock()
 	defer l.Unlock()
 	return l.lasttime
-}
-
-func keepalive(c *Client) {
-	DEBUG.Println(PNG, "keepalive starting")
-	c.pingOutstanding = false
-
-	for {
-		select {
-		case <-c.stop:
-			DEBUG.Println(PNG, "keepalive stopped")
-			c.workers.Done()
-			return
-		default:
-			last := uint(time.Since(c.lastContact.get()).Seconds())
-			//DEBUG.Printf("%s last contact: %d (timeout: %d)", PNG, last, uint(c.options.KeepAlive.Seconds()))
-			if last > uint(c.options.KeepAlive.Seconds()) {
-				if !c.pingOutstanding {
-					DEBUG.Println(PNG, "keepalive sending ping")
-					ping := packets.NewControlPacket(packets.Pingreq).(*packets.PingreqPacket)
-					c.pingOutstanding = true
-					//We don't want to wait behind large messages being sent, the Write call
-					//will block until it it able to send the packet.
-					ping.Write(c.conn)
-					time.Sleep(3 * time.Second)
-					continue
-				} else {
-					CRITICAL.Println(PNG, "pingresp not received, disconnecting")
-					c.workers.Done()
-					c.internalConnLost(errors.New("pingresp not received, disconnecting"))
-					return
-				}
-			}
-			time.Sleep(1 * time.Second)
-		}
-	}
 }

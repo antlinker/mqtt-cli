@@ -17,6 +17,7 @@ package mqtt
 import (
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
 	"reflect"
@@ -68,44 +69,59 @@ func openConnection(uri *url.URL, tlsc *tls.Config, timeout time.Duration) (net.
 // actually read incoming messages off the wire
 // send Message object into ibound channel
 func incoming(c *Client) {
-	defer c.workers.Done()
+
 	var err error
+	defer func(c *Client) {
+
+		c.workers.Done()
+		if err != nil {
+			ERROR.Println(NET, c.options.ClientID, ":", "incoming closed:", err)
+			c.internalConnLost(err)
+			return
+		}
+		if e := recover(); e != nil {
+			ERROR.Println(NET, c.options.ClientID, ":", "incoming panic closed :", e)
+			c.internalConnLost(fmt.Errorf("读取数据出现严重错误:%v", e))
+			return
+		}
+		ERROR.Println(NET, c.options.ClientID, ":", "incoming closing")
+
+	}(c)
+
 	var cp packets.ControlPacket
 
 	DEBUG.Println(NET, "incoming started")
 
 	for {
 		if cp, err = packets.ReadPacket(c.conn); err != nil {
-			break
+			return
 		}
 		DEBUG.Println(NET, "Received Message")
 		select {
 		case c.ibound <- cp:
-		case <-time.After(10 * time.Second):
-			//超时判断为死锁,解决逻(alllogic) go程退出后,接收(incoming)go程不能退出
-			//internalConnLost 方法阻塞,client不能正常使用的bug
-			break
+		case <-c.stop:
+			DEBUG.Println(NET, "incoming stopped")
+			return
 		}
 
-	}
-	// We received an error on read.
-	// If disconnect is in progress, swallow error and return
-	select {
-	case <-c.stop:
-		DEBUG.Println(NET, "incoming stopped")
-		return
-		// Not trying to disconnect, send the error to the errors channel
-	default:
-		ERROR.Println(NET, "incoming stopped with error")
-		c.errors <- err
-		return
 	}
 }
 
 // receive a Message object on obound, and then
 // actually send outgoing message to the wire
 func outgoing(c *Client) {
-	defer c.workers.Done()
+	var err error
+	defer func(c *Client) {
+
+		c.workers.Done()
+		if err != nil {
+			ERROR.Println(NET, c.options.ClientID, ":", "outgoing closing:", err)
+			c.internalConnLost(err)
+			return
+		}
+		ERROR.Println(NET, c.options.ClientID, ":", "outgoing closed ")
+
+	}(c)
 	DEBUG.Println(NET, "outgoing started")
 
 	for {
@@ -126,9 +142,9 @@ func outgoing(c *Client) {
 				c.conn.SetWriteDeadline(time.Now().Add(c.options.WriteTimeout))
 			}
 
-			if err := msg.Write(c.conn); err != nil {
-				ERROR.Println(NET, "outgoing stopped with error")
-				c.errors <- err
+			if err = msg.Write(c.conn); err != nil {
+				ERROR.Println(NET, c.options.ClientID+":outgoing stopped with error 1")
+				//c.errors <- err
 				return
 			}
 
@@ -152,9 +168,9 @@ func outgoing(c *Client) {
 				msg.p.(*packets.UnsubscribePacket).MessageID = c.getID(msg.t)
 			}
 			DEBUG.Println(NET, "obound priority msg to write, type", reflect.TypeOf(msg.p))
-			if err := msg.p.Write(c.conn); err != nil {
-				ERROR.Println(NET, "outgoing stopped with error")
-				c.errors <- err
+			if err = msg.p.Write(c.conn); err != nil {
+				ERROR.Println(NET, c.options.ClientID+":outgoing stopped with error 2")
+				//c.errors <- err
 				return
 			}
 			c.lastContact.update()
@@ -173,7 +189,17 @@ func outgoing(c *Client) {
 // send replies on obound
 // delete messages from store if necessary
 func alllogic(c *Client) {
+	var err error
+	defer func(c *Client) {
+		c.workers.Done()
 
+		if err != nil {
+			ERROR.Println(NET, c.options.ClientID+":alllogic stopped :", err)
+			c.internalConnLost(err)
+			return
+		}
+		ERROR.Println(NET, c.options.ClientID+":alllogic stopped ")
+	}(c)
 	DEBUG.Println(NET, "logic started")
 
 	for {
@@ -228,15 +254,7 @@ func alllogic(c *Client) {
 					select {
 					case c.incomingPubChan <- pp:
 						DEBUG.Println(NET, "done putting msg on incomingPubChan")
-					case err, ok := <-c.errors:
-						DEBUG.Println(NET, "error while putting msg on pubChanZero")
-						// We are unblocked, but need to put the error back on so the outer
-						// select can handle it appropriately.
-						if ok {
-							go func(errVal error, errChan chan error) {
-								errChan <- errVal
-							}(err, c.errors)
-						}
+
 					}
 				}
 			case *packets.PubackPacket:
@@ -271,12 +289,29 @@ func alllogic(c *Client) {
 				c.freeID(pc.MessageID)
 			}
 		case <-c.stop:
-			WARN.Println(NET, "logic stopped")
+			WARN.Println(NET, c.options.ClientID+":logic stopped")
 			return
-		case err := <-c.errors:
-			ERROR.Println(NET, "logic got error")
-			c.internalConnLost(err)
-			return
+
+		case <-time.After(c.options.KeepAlive + 100*time.Millisecond):
+			if c.options.KeepAlive.Seconds() <= 0 {
+				continue
+			}
+			last := uint(time.Since(c.lastContact.get()).Seconds())
+			if last > uint(c.options.KeepAlive.Seconds())+4 {
+
+				WARN.Println(NET, c.options.ClientID+":pingresp not received, disconnecting")
+				err = fmt.Errorf("pingresp not received")
+				//c.workers.Done()
+				return
+			} else {
+				DEBUG.Println(NET, "keepalive sending ping")
+				ping := packets.NewControlPacket(packets.Pingreq).(*packets.PingreqPacket)
+				c.pingOutstanding = true
+				//We don't want to wait behind large messages being sent, the Write call
+				//will block until it it able to send the packet.
+				ping.Write(c.conn)
+			}
+
 		}
 		c.lastContact.update()
 	}

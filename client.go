@@ -20,9 +20,15 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/antlinker/mqtt-cli/packets"
+)
+
+const (
+	_LOSTING int64 = int64(1)
+	_LOSTEND int64 = int64(0)
 )
 
 // ClientInt is the interface definition for a Client as used by this
@@ -53,6 +59,7 @@ type ClientInt interface {
 // information can be found in their respective documentation.
 // Numerous connection options may be specified by configuring a
 // and then supplying a ClientOptions type.
+
 type Client struct {
 	sync.RWMutex
 	messageIds
@@ -63,7 +70,7 @@ type Client struct {
 	msgRouter       *router
 	stopRouter      chan bool
 	incomingPubChan chan *packets.PublishPacket
-	errors          chan error
+	//errors          chan error
 	stop            chan struct{}
 	persist         Store
 	options         ClientOptions
@@ -71,6 +78,8 @@ type Client struct {
 	pingOutstanding bool
 	connected       bool
 	workers         sync.WaitGroup
+
+	lost int64
 }
 
 // NewClient will create an MQTT v3.1.1 client with all of the options specified
@@ -127,7 +136,7 @@ func (c *Client) Connect() Token {
 	var err error
 	t := newToken(packets.Connect).(*ConnectToken)
 	DEBUG.Println(CLI, "Connect()")
-
+	c.lost = _LOSTEND
 	go func() {
 		var rc byte
 		cm := newConnectMsgFromOptions(&c.options)
@@ -192,7 +201,7 @@ func (c *Client) Connect() Token {
 		c.obound = make(chan *PacketAndToken, 100)
 		c.oboundP = make(chan *PacketAndToken, 100)
 		c.ibound = make(chan packets.ControlPacket)
-		c.errors = make(chan error)
+		//c.errors = make(chan error)
 		c.stop = make(chan struct{})
 
 		c.incomingPubChan = make(chan *packets.PublishPacket, 100)
@@ -200,6 +209,7 @@ func (c *Client) Connect() Token {
 
 		c.workers.Add(1)
 		go outgoing(c)
+		c.workers.Add(1)
 		go alllogic(c)
 
 		c.connected = true
@@ -208,10 +218,10 @@ func (c *Client) Connect() Token {
 			go c.options.OnConnect(c)
 		}
 
-		if c.options.KeepAlive != 0 {
-			c.workers.Add(1)
-			go keepalive(c)
-		}
+		// if c.options.KeepAlive != 0 {
+		// 	c.workers.Add(1)
+		// 	go keepalive(c)
+		// }
 
 		// Take care of any messages in the store
 		//var leftovers []Receipt
@@ -226,7 +236,9 @@ func (c *Client) Connect() Token {
 		go incoming(c)
 
 		DEBUG.Println(CLI, "exit startClient")
+		c.lost = _LOSTEND
 		t.flowComplete()
+
 	}()
 	return t
 }
@@ -266,19 +278,19 @@ func (c *Client) reconnect() {
 					c.conn = nil
 					//if the protocol version was explicitly set don't do any fallback
 					if c.options.protocolVersionExplicit {
-						ERROR.Println(CLI, "Connecting to", broker, "CONNACK was not Accepted, but rather", packets.ConnackReturnCodes[rc])
+						ERROR.Println(CLI, c.options.ClientID+":Connecting to", broker, "CONNACK was not Accepted, but rather", packets.ConnackReturnCodes[rc])
 						continue
 					}
 					if c.options.ProtocolVersion == 4 {
-						DEBUG.Println(CLI, "Trying reconnect using MQTT 3.1 protocol")
+						DEBUG.Println(CLI, c.options.ClientID+":Trying reconnect using MQTT 3.1 protocol")
 						c.options.ProtocolVersion = 3
 						goto CONN
 					}
 				}
 				break
 			} else {
-				ERROR.Println(CLI, err.Error())
-				WARN.Println(CLI, "failed to connect to broker, trying next")
+				ERROR.Println(CLI, c.options.ClientID, err.Error())
+				WARN.Println(CLI, c.options.ClientID+":failed to connect to broker, trying next")
 				rc = packets.ErrNetworkError
 			}
 		}
@@ -296,6 +308,7 @@ func (c *Client) reconnect() {
 
 	c.workers.Add(1)
 	go outgoing(c)
+	c.workers.Add(1)
 	go alllogic(c)
 
 	c.setConnected(true)
@@ -304,12 +317,13 @@ func (c *Client) reconnect() {
 		go c.options.OnConnect(c)
 	}
 
-	if c.options.KeepAlive != 0 {
-		c.workers.Add(1)
-		go keepalive(c)
-	}
+	// if c.options.KeepAlive != 0 {
+	// 	c.workers.Add(1)
+	// 	go keepalive(c)
+	// }
 	c.workers.Add(1)
 	go incoming(c)
+	c.lost = _LOSTEND
 }
 
 // This function is only used for receiving a connack
@@ -321,21 +335,21 @@ func (c *Client) connect() byte {
 
 	ca, err := packets.ReadPacket(c.conn)
 	if err != nil {
-		ERROR.Println(NET, "connect got error", err)
+		ERROR.Println(NET, c.options.ClientID+":connect got error", err)
 		return packets.ErrNetworkError
 	}
 	if ca == nil {
-		ERROR.Println(NET, "received nil packet")
+		ERROR.Println(NET, c.options.ClientID+":received nil packet")
 		return packets.ErrNetworkError
 	}
 
 	msg, ok := ca.(*packets.ConnackPacket)
 	if !ok {
-		ERROR.Println(NET, "received msg that was not CONNACK")
+		ERROR.Println(NET, c.options.ClientID+":received msg that was not CONNACK")
 		return packets.ErrNetworkError
 	}
 
-	DEBUG.Println(NET, "received connack")
+	DEBUG.Println(NET, c.options.ClientID+":received connack")
 	return msg.ReturnCode
 }
 
@@ -372,14 +386,32 @@ func (c *Client) forceDisconnect() {
 }
 
 func (c *Client) internalConnLost(err error) {
-	close(c.stop)
+
+	var clost = c.lost
+	if clost == _LOSTING {
+		//WARN.Println(CLI, c.options.ClientID+":internalConnLost  closing quit 1")
+		return
+	}
+	if !atomic.CompareAndSwapInt64(&c.lost, clost, _LOSTING) {
+		//WARN.Println(CLI, c.options.ClientID+":internalConnLost  closing quit 2")
+		return
+	}
+	select {
+	case <-c.stop:
+		//someone else has already closed the channel, must be error
+	default:
+		close(c.stop)
+	}
 	c.conn.Close()
+	//WARN.Println(CLI, c.options.ClientID+":internalConnLost  close wait")
 	c.workers.Wait()
+	//WARN.Println(CLI, c.options.ClientID+":internalConnLost  wait end closed:", c.options.AutoReconnect)
 	if c.IsConnected() {
 		if c.options.OnConnectionLost != nil {
 			go c.options.OnConnectionLost(c, err)
 		}
 		if c.options.AutoReconnect {
+			DEBUG.Println(CLI, c.options.ClientID+":auto reconnect")
 			go c.reconnect()
 		} else {
 			c.setConnected(false)
