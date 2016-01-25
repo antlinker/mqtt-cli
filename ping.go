@@ -61,6 +61,8 @@ func keepalive(c *Client) {
 					//We don't want to wait behind large messages being sent, the Write call
 					//will block until it it able to send the packet.
 					ping.Write(c.conn)
+					time.Sleep(3 * time.Second)
+					continue
 				} else {
 					CRITICAL.Println(PNG, "pingresp not received, disconnecting")
 					c.workers.Done()
