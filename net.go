@@ -79,7 +79,14 @@ func incoming(c *Client) {
 			break
 		}
 		DEBUG.Println(NET, "Received Message")
-		c.ibound <- cp
+		select {
+		case c.ibound <- cp:
+		case <-time.After(10 * time.Second):
+			//超时判断为死锁,解决逻(alllogic) go程退出后,接收(incoming)go程不能退出
+			//internalConnLost 方法阻塞,client不能正常使用的bug
+			break
+		}
+
 	}
 	// We received an error on read.
 	// If disconnect is in progress, swallow error and return
