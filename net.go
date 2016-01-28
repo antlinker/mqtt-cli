@@ -97,8 +97,10 @@ func incoming(c *Client) {
 			return
 		}
 		DEBUG.Println(NET, "Received Message")
+		c.lastContact.update()
 		select {
 		case c.ibound <- cp:
+
 		case <-c.stop:
 			DEBUG.Println(NET, "incoming stopped")
 			return
@@ -288,6 +290,7 @@ func alllogic(c *Client) {
 				c.getToken(pc.MessageID).flowComplete()
 				c.freeID(pc.MessageID)
 			}
+
 		case <-c.stop:
 			WARN.Println(NET, c.options.ClientID+":logic stopped")
 			return
@@ -313,6 +316,6 @@ func alllogic(c *Client) {
 			}
 
 		}
-		c.lastContact.update()
+
 	}
 }
