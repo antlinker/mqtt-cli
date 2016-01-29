@@ -218,10 +218,10 @@ func (c *Client) Connect() Token {
 			go c.options.OnConnect(c)
 		}
 
-		// if c.options.KeepAlive != 0 {
-		// 	c.workers.Add(1)
-		// 	go keepalive(c)
-		// }
+		if c.options.KeepAlive != 0 {
+			c.workers.Add(1)
+			go keepalive(c)
+		}
 
 		// Take care of any messages in the store
 		//var leftovers []Receipt
@@ -317,10 +317,10 @@ func (c *Client) reconnect() {
 		go c.options.OnConnect(c)
 	}
 
-	// if c.options.KeepAlive != 0 {
-	// 	c.workers.Add(1)
-	// 	go keepalive(c)
-	// }
+	if c.options.KeepAlive != 0 {
+		c.workers.Add(1)
+		go keepalive(c)
+	}
 	c.workers.Add(1)
 	go incoming(c)
 	c.lost = _LOSTEND
@@ -389,11 +389,11 @@ func (c *Client) internalConnLost(err error) {
 
 	var clost = c.lost
 	if clost == _LOSTING {
-		//WARN.Println(CLI, c.options.ClientID+":internalConnLost  closing quit 1")
+		WARN.Println(CLI, c.options.ClientID+":internalConnLost  closing quit 1")
 		return
 	}
 	if !atomic.CompareAndSwapInt64(&c.lost, clost, _LOSTING) {
-		//WARN.Println(CLI, c.options.ClientID+":internalConnLost  closing quit 2")
+		WARN.Println(CLI, c.options.ClientID+":internalConnLost  closing quit 2")
 		return
 	}
 	select {
@@ -403,9 +403,9 @@ func (c *Client) internalConnLost(err error) {
 		close(c.stop)
 	}
 	c.conn.Close()
-	//WARN.Println(CLI, c.options.ClientID+":internalConnLost  close wait")
+	WARN.Println(CLI, c.options.ClientID+":internalConnLost  close wait")
 	c.workers.Wait()
-	//WARN.Println(CLI, c.options.ClientID+":internalConnLost  wait end closed:", c.options.AutoReconnect)
+	WARN.Println(CLI, c.options.ClientID+":internalConnLost  wait end closed:", c.options.AutoReconnect)
 	if c.IsConnected() {
 		if c.options.OnConnectionLost != nil {
 			go c.options.OnConnectionLost(c, err)
@@ -489,7 +489,8 @@ func (c *Client) Subscribe(topic string, qos byte, callback MessageHandler) Toke
 	}
 
 	token.subs = append(token.subs, topic)
-	c.oboundP <- &PacketAndToken{p: sub, t: token}
+	//c.oboundP <- &PacketAndToken{p: sub, t: token}
+	sendServer(c, sub, token)
 	DEBUG.Println(CLI, "exit Subscribe")
 	return token
 }
@@ -518,7 +519,8 @@ func (c *Client) SubscribeMultiple(filters map[string]byte, callback MessageHand
 	}
 	token.subs = make([]string, len(sub.Topics))
 	copy(token.subs, sub.Topics)
-	c.oboundP <- &PacketAndToken{p: sub, t: token}
+	//c.oboundP <- &PacketAndToken{p: sub, t: token}
+	sendServer(c, sub, token)
 	DEBUG.Println(CLI, "exit SubscribeMultiple")
 	return token
 }
@@ -537,8 +539,8 @@ func (c *Client) Unsubscribe(topics ...string) Token {
 	unsub := packets.NewControlPacket(packets.Unsubscribe).(*packets.UnsubscribePacket)
 	unsub.Topics = make([]string, len(topics))
 	copy(unsub.Topics, topics)
-
-	c.oboundP <- &PacketAndToken{p: unsub, t: token}
+	sendServer(c, unsub, token)
+	//c.oboundP <- &PacketAndToken{p: unsub, t: token}
 	for _, topic := range topics {
 		c.msgRouter.deleteRoute(topic)
 	}

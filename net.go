@@ -98,6 +98,7 @@ func incoming(c *Client) {
 		}
 		DEBUG.Println(NET, "Received Message")
 		c.lastContact.update()
+		c.pingOutstanding = false
 		select {
 		case c.ibound <- cp:
 
@@ -119,6 +120,11 @@ func outgoing(c *Client) {
 		if err != nil {
 			ERROR.Println(NET, c.options.ClientID, ":", "outgoing closing:", err)
 			c.internalConnLost(err)
+			return
+		}
+		if e := recover(); e != nil {
+			ERROR.Println(NET, c.options.ClientID, ":", "outgoing panic closed :", e)
+			c.internalConnLost(fmt.Errorf("读取数据出现严重错误:%v", e))
 			return
 		}
 		ERROR.Println(NET, c.options.ClientID, ":", "outgoing closed ")
@@ -200,7 +206,12 @@ func alllogic(c *Client) {
 			c.internalConnLost(err)
 			return
 		}
-		ERROR.Println(NET, c.options.ClientID+":alllogic stopped ")
+		if e := recover(); e != nil {
+			ERROR.Println(NET, c.options.ClientID, ":", "alllogic panic closed :", e)
+			c.internalConnLost(fmt.Errorf("处理数据逻辑出现严重错误:%v", e))
+			return
+		}
+		ERROR.Println(NET, c.options.ClientID+":alllogic closed ")
 	}(c)
 	DEBUG.Println(NET, "logic started")
 
@@ -235,29 +246,29 @@ func alllogic(c *Client) {
 				pp := msg.(*packets.PublishPacket)
 				DEBUG.Println(NET, "received publish, msgId:", pp.MessageID)
 				DEBUG.Println(NET, "putting msg on onPubChan")
+				DEBUG.Println(NET, "done putting msg on incomingPubChan")
+				select {
+				case c.incomingPubChan <- pp:
+				case <-c.stop:
+					return
+				}
 				switch pp.Qos {
 				case 2:
-					c.incomingPubChan <- pp
-					DEBUG.Println(NET, "done putting msg on incomingPubChan")
 					pr := packets.NewControlPacket(packets.Pubrec).(*packets.PubrecPacket)
 					pr.MessageID = pp.MessageID
 					DEBUG.Println(NET, "putting pubrec msg on obound")
-					c.oboundP <- &PacketAndToken{p: pr, t: nil}
+					if !sendServer(c, pr, nil) {
+						return
+					}
 					DEBUG.Println(NET, "done putting pubrec msg on obound")
 				case 1:
-					c.incomingPubChan <- pp
-					DEBUG.Println(NET, "done putting msg on incomingPubChan")
 					pa := packets.NewControlPacket(packets.Puback).(*packets.PubackPacket)
 					pa.MessageID = pp.MessageID
 					DEBUG.Println(NET, "putting puback msg on obound")
-					c.oboundP <- &PacketAndToken{p: pa, t: nil}
-					DEBUG.Println(NET, "done putting puback msg on obound")
-				case 0:
-					select {
-					case c.incomingPubChan <- pp:
-						DEBUG.Println(NET, "done putting msg on incomingPubChan")
-
+					if !sendServer(c, pa, nil) {
+						return
 					}
+					DEBUG.Println(NET, "done putting puback msg on obound")
 				}
 			case *packets.PubackPacket:
 				pa := msg.(*packets.PubackPacket)
@@ -271,19 +282,18 @@ func alllogic(c *Client) {
 				DEBUG.Println(NET, "received pubrec, id:", prec.MessageID)
 				prel := packets.NewControlPacket(packets.Pubrel).(*packets.PubrelPacket)
 				prel.MessageID = prec.MessageID
-				select {
-				case c.oboundP <- &PacketAndToken{p: prel, t: nil}:
-				case <-time.After(time.Second):
+				if !sendServer(c, prel, nil) {
+					return
 				}
 			case *packets.PubrelPacket:
 				pr := msg.(*packets.PubrelPacket)
 				DEBUG.Println(NET, "received pubrel, id:", pr.MessageID)
 				pc := packets.NewControlPacket(packets.Pubcomp).(*packets.PubcompPacket)
 				pc.MessageID = pr.MessageID
-				select {
-				case c.oboundP <- &PacketAndToken{p: pc, t: nil}:
-				case <-time.After(time.Second):
+				if !sendServer(c, pc, nil) {
+					return
 				}
+
 			case *packets.PubcompPacket:
 				pc := msg.(*packets.PubcompPacket)
 				DEBUG.Println(NET, "received pubcomp, id:", pc.MessageID)
@@ -295,27 +305,16 @@ func alllogic(c *Client) {
 			WARN.Println(NET, c.options.ClientID+":logic stopped")
 			return
 
-		case <-time.After(c.options.KeepAlive + 100*time.Millisecond):
-			if c.options.KeepAlive.Seconds() <= 0 {
-				continue
-			}
-			last := uint(time.Since(c.lastContact.get()).Seconds())
-			if last > uint(c.options.KeepAlive.Seconds())+4 {
-
-				WARN.Println(NET, c.options.ClientID+":pingresp not received, disconnecting")
-				err = fmt.Errorf("pingresp not received")
-				//c.workers.Done()
-				return
-			} else {
-				DEBUG.Println(NET, "keepalive sending ping")
-				ping := packets.NewControlPacket(packets.Pingreq).(*packets.PingreqPacket)
-				c.pingOutstanding = true
-				//We don't want to wait behind large messages being sent, the Write call
-				//will block until it it able to send the packet.
-				ping.Write(c.conn)
-			}
-
 		}
 
+	}
+}
+
+func sendServer(c *Client, cp packets.ControlPacket, token Token) bool {
+	select {
+	case c.oboundP <- &PacketAndToken{p: cp, t: token}:
+		return true
+	case <-c.stop:
+		return false
 	}
 }

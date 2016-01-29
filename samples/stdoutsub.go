@@ -62,8 +62,9 @@ func main() {
 		Username:             *username,
 		Password:             *password,
 		MaxReconnectInterval: 1 * time.Second,
-		KeepAlive:            30 * time.Second,
+		KeepAlive:            10 * time.Second,
 		TLSConfig:            tls.Config{InsecureSkipVerify: true, ClientAuth: tls.NoClientCert},
+		AutoReconnect:        true,
 	}
 	connOpts.AddBroker(*server)
 	connOpts.OnConnect = func(c *MQTT.Client) {

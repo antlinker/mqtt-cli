@@ -31,7 +31,11 @@ var (
 
 func init() {
 	ERROR = log.New(os.Stdout, "", 0)
+	//CRITICAL = log.New(ioutil.Discard, "", 0)
+	//CRITICAL = log.New(os.Stdout, "", 0)
 	CRITICAL = log.New(ioutil.Discard, "", 0)
+	//WARN = log.New(os.Stdout, "", 0)
 	WARN = log.New(os.Stdout, "", 0)
+	//DEBUG = log.New(os.Stdout, "", 0)
 	DEBUG = log.New(ioutil.Discard, "", 0)
 }
