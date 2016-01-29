@@ -143,8 +143,8 @@ func outgoing(c *Client) {
 			if msg.Qos != 0 && msg.MessageID == 0 {
 				msg.MessageID = c.getID(pub.t)
 				pub.t.(*PublishToken).messageID = msg.MessageID
+				persistOutbound(c.persist, msg)
 			}
-			//persist_obound(c.persist, msg)
 
 			if c.options.WriteTimeout > 0 {
 				c.conn.SetWriteDeadline(time.Now().Add(c.options.WriteTimeout))
@@ -169,12 +169,14 @@ func outgoing(c *Client) {
 			c.lastContact.update()
 			DEBUG.Println(NET, "obound wrote msg, id:", msg.MessageID)
 		case msg := <-c.oboundP:
+
 			switch msg.p.(type) {
 			case *packets.SubscribePacket:
 				msg.p.(*packets.SubscribePacket).MessageID = c.getID(msg.t)
 			case *packets.UnsubscribePacket:
 				msg.p.(*packets.UnsubscribePacket).MessageID = c.getID(msg.t)
 			}
+			persistOutbound(c.persist, msg.p)
 			DEBUG.Println(NET, "obound priority msg to write, type", reflect.TypeOf(msg.p))
 			if err = msg.p.Write(c.conn); err != nil {
 				ERROR.Println(NET, c.options.ClientID+":outgoing stopped with error 2")
@@ -220,8 +222,9 @@ func alllogic(c *Client) {
 
 		select {
 		case msg := <-c.ibound:
-			DEBUG.Println(NET, "logic got msg on ibound")
-			//persist_ibound(c.persist, msg)
+			DEBUG.Println(NET, "logic got msg on ibound, type", reflect.TypeOf(msg))
+			persistInbound(c.persist, msg)
+
 			switch msg.(type) {
 			case *packets.PingrespPacket:
 				DEBUG.Println(NET, "received pingresp")
@@ -256,6 +259,7 @@ func alllogic(c *Client) {
 				case 2:
 					pr := packets.NewControlPacket(packets.Pubrec).(*packets.PubrecPacket)
 					pr.MessageID = pp.MessageID
+
 					DEBUG.Println(NET, "putting pubrec msg on obound")
 					if !sendServer(c, pr, nil) {
 						return

@@ -94,7 +94,7 @@ func keepalive(c *Client) {
 					continue
 				} else {
 					//CRITICAL.Println(PNG, "pingresp not received, disconnecting")
-					c.internalConnLost(errors.New("pingresp not received, disconnecting"))
+					err = errors.New("pingresp not received, disconnecting")
 					return
 				}
 			}

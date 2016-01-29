@@ -324,6 +324,23 @@ func (c *Client) reconnect() {
 	c.workers.Add(1)
 	go incoming(c)
 	c.lost = _LOSTEND
+	//发送未完成的消息
+	ids := c.persist.All()
+	if ids != nil {
+		for _, id := range ids {
+			cp := c.persist.Get(id)
+			pt := &PacketAndToken{p: cp, t: nil}
+			if cp != nil {
+				pt.t = c.getToken(cp.Details().MessageID)
+			}
+
+			select {
+			case c.obound <- pt:
+			case <-c.stop:
+			}
+
+		}
+	}
 }
 
 // This function is only used for receiving a connack
@@ -461,6 +478,7 @@ func (c *Client) Publish(topic string, qos byte, retained bool, payload interfac
 	}
 
 	DEBUG.Println(CLI, "sending publish message, topic:", topic)
+
 	c.obound <- &PacketAndToken{p: pub, t: token}
 	return token
 }

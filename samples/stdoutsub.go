@@ -29,7 +29,7 @@ import (
 )
 
 func onMessageReceived(client *MQTT.Client, message MQTT.Message) {
-	fmt.Printf("Received message on topic: %s\nMessage: %s\n", message.Topic(), message.Payload())
+	fmt.Printf("Received message on topic: %s(%d)\n Message: %s\n", message.Topic(), message.Qos(), message.Payload())
 }
 
 var i int64
